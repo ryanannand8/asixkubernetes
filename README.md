@@ -6,7 +6,7 @@ Casos prácticos de Kubernetes del módulo de ASIX2, desplegados en local con **
 
 | Caso | Contenido | Conceptos | Documentación |
 |------|-----------|-----------|---------------|
-| **I** | Servidor Nginx en alta disponibilidad | Deployment, autorrecuperación, escalado, NodePort | [`readme`](readme) · [`nginx-deployment.yaml`](nginx-deployment.yaml) |
+| **I** | Servidor Nginx en alta disponibilidad | Deployment, autorrecuperación, escalado, NodePort | [`caso1/`](caso1/README.md) |
 | **II** | WordPress + MySQL | Secret, PersistentVolumeClaim, DNS interno | [`caso2/`](caso2/readme) |
 | **III** | App de 3 capas: Nginx → Node.js → MongoDB | Namespace, ConfigMap, Secret, PVC, imagen propia | [`caso3/`](caso3/README) |
 | **IV** | Despliegue progresivo de Nginx | Pod vs ReplicaSet vs Deployment | [`caso4/`](caso4/README) |
@@ -16,7 +16,7 @@ Casos prácticos de Kubernetes del módulo de ASIX2, desplegados en local con **
 
 ```
 .
-├── readme, nginx-deployment.yaml    # Caso I
+├── caso1/                           # Nginx en alta disponibilidad
 ├── caso2/                           # WordPress + MySQL
 ├── caso3/
 │   ├── back/                        # Backend Node.js (Dockerfile)
