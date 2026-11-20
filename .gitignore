@@ -1,0 +1,28 @@
+# ── Variables de entorno ──
+.env
+.env.*
+*.env
+!.env.example
+!*.env.example
+
+# ── Secrets reales de Kubernetes (se suben solo las plantillas *.yaml.example) ──
+secrets.yaml
+*secret*.yaml
+*secret*.yml
+!*.example
+
+# ── Claves y certificados ──
+*.pem
+*.key
+*.crt
+kubeconfig
+*.kubeconfig
+
+# ── Dependencias ──
+node_modules/
+
+# ── Locales / temporales ──
+*.local
+.DS_Store
+Thumbs.db
+.minikube/

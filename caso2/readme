@@ -1,0 +1,249 @@
+Caso Práctico II: Despliegue de una Aplicación Web Multicapa (WordPress + MySQL) con Persistencia y Secretos
+
+Documentación técnica y guía de despliegue para el blog corporativo en WordPress respaldado por MySQL 8.0, implementando gestión segura de credenciales (Secret), almacenamiento persistente (PersistentVolumeClaim) y comunicación interna por DNS en Kubernetes.
+
+Arquitectura y Flujo de Datos
+
+[ Usuario / Navegador ]
+         |  (1. Flujo Externo HTTP - Service NodePort)
+         v
+[ Service: wordpress (NodePort) ]
+         |
+         v
+[ Pod: WordPress Frontend ] <------- [ PVC: wp-pv-claim (2Gi) ]
+         |  (2. DNS Interno: wordpress-mysql:3306)
+         v
+[ Service: wordpress-mysql (Headless / ClusterIP: None) ]
+         |
+         v
+[ Pod: MySQL 8.0 Database ] <------- [ PVC: mysql-pv-claim (2Gi) ]
+         ^
+         |  (3. Inyección de credenciales)
+[ Secret: mysql-pass-secret ]
+
+
+Flujo de Acceso del Usuario: El tráfico externo entra a través del puerto asignado por el servicio NodePort hacia el contenedor frontend de WordPress.
+
+Comunicación Interna por DNS: WordPress se conecta a la base de datos mediante el nombre de host wordpress-mysql:3306, resuelto internamente por el servicio Headless (ClusterIP: None).
+
+Inyección de Credenciales: El objeto Secret (mysql-pass-secret) proporciona las contraseñas como variables de entorno sin exponerlas en texto plano en los manifiestos de despliegue.
+
+Persistencia de Datos: Ambos componentes escriben en sus respectivos PersistentVolumeClaims (wp-pv-claim y mysql-pv-claim), asegurando la integridad de los datos ante reinicios o eliminación de Pods.
+
+Resolución de Tareas
+
+Tarea 1: Creación del Secreto de la Base de Datos (mysql-secret.yaml)
+
+Crea el archivo mysql-secret.yaml para almacenar de forma segura las contraseñas de administración y de usuario:
+
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-pass-secret
+type: Opaque
+stringData:
+  mysql-root-password: PasswordRoot123!
+  mysql-password: PasswordUser123!
+
+
+Comandos de aplicación y verificación:
+
+kubectl apply -f mysql-secret.yaml
+kubectl get secrets
+
+
+Tarea 2: Despliegue de la Capa de Base de Datos (mysql-deployment.yaml)
+
+Crea el archivo mysql-deployment.yaml con el PersistentVolumeClaim de 2Gi, el Deployment de MySQL 8.0 (con estrategia Recreate para evitar bloqueos sobre el volumen) y el servicio Headless wordpress-mysql:
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-pv-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress-mysql
+spec:
+  selector:
+    matchLabels:
+      app: wordpress
+      tier: mysql
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: wordpress
+        tier: mysql
+    spec:
+      containers:
+      - image: mysql:8.0
+        name: mysql
+        env:
+        - name: MYSQL_ROOT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass-secret
+              key: mysql-root-password
+        - name: MYSQL_DATABASE
+          value: wordpress
+        - name: MYSQL_USER
+          value: wordpress
+        - name: MYSQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass-secret
+              key: mysql-password
+        ports:
+        - containerPort: 3306
+          name: mysql
+        volumeMounts:
+        - name: mysql-persistent-storage
+          mountPath: /var/lib/mysql
+      volumes:
+      - name: mysql-persistent-storage
+        persistentVolumeClaim:
+          claimName: mysql-pv-claim
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress-mysql
+spec:
+  ports:
+  - port: 3306
+  selector:
+    app: wordpress
+    tier: mysql
+  clusterIP: None
+
+
+Comandos de aplicación y verificación:
+
+kubectl apply -f mysql-deployment.yaml
+kubectl get pvc
+
+
+(Verifica que mysql-pv-claim figure en estado Bound).
+
+Tarea 3: Despliegue de la Capa Frontend WordPress (wordpress-deployment.yaml)
+
+Crea el archivo wordpress-deployment.yaml con su volumen persistente, el Deployment conectado a wordpress-mysql mediante las credenciales del secreto y el servicio NodePort:
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wp-pv-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wordpress
+spec:
+  selector:
+    matchLabels:
+      app: wordpress
+      tier: frontend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: wordpress
+        tier: frontend
+    spec:
+      containers:
+      - image: wordpress:6.4-apache
+        name: wordpress
+        env:
+        - name: WORDPRESS_DB_HOST
+          value: wordpress-mysql
+        - name: WORDPRESS_DB_USER
+          value: wordpress
+        - name: WORDPRESS_DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: mysql-pass-secret
+              key: mysql-password
+        - name: WORDPRESS_DB_NAME
+          value: wordpress
+        ports:
+        - containerPort: 80
+          name: wordpress
+        volumeMounts:
+        - name: wordpress-persistent-storage
+          mountPath: /var/www/html
+      volumes:
+      - name: wordpress-persistent-storage
+        persistentVolumeClaim:
+          claimName: wp-pv-claim
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wordpress
+spec:
+  ports:
+    - port: 80
+  selector:
+    app: wordpress
+    tier: frontend
+  type: NodePort
+
+
+Comandos de aplicación y verificación:
+
+kubectl apply -f wordpress-deployment.yaml
+kubectl get pvc,pods,svc
+
+
+Tarea 4: Acceso Externo y Configuración de WordPress
+
+Obtener la URL de acceso mediante Minikube:
+
+minikube service wordpress --url
+
+
+Completar la instalación web:
+
+Abre la URL proporcionada en tu navegador.
+
+Configura el idioma, el título del blog, las credenciales del administrador y publica una entrada de prueba.
+
+Tarea 5: Prueba de Resiliencia y Persistencia de Datos
+
+Eliminar el Pod de MySQL para simular un fallo:
+
+kubectl delete pod -l app=wordpress,tier=mysql
+
+
+Monitorizar la creación del nuevo Pod y su reconexión al PVC:
+
+kubectl get pods -w
+
+
+Verificar la integridad de los datos:
+
+Recarga la página web de WordPress en el navegador.
+
+Resultado esperado: El blog carga directamente sin solicitar la instalación inicial, conservando intactos el usuario administrador y las entradas publicadas gracias al almacenamiento persistente (mysql-pv-claim).
+
+Limpieza del Entorno
+
+kubectl delete -f wordpress-deployment.yaml
+kubectl delete -f mysql-deployment.yaml
+kubectl delete -f mysql-secret.yaml

@@ -1,0 +1,38 @@
+Caso Práctico I: Despliegue y Gestión de Aplicaciones de Alta Disponibilidad en Kubernetes con MinikubeDocumentación técnica y guía de resolución para el entorno de pruebas (Proof of Concept - PoC) de despliegue de un servidor web Nginx en alta disponibilidad utilizando Kubernetes y Minikube sobre Linux/WSL2.Requisitos PreviosMotor de contenedores Docker Engine en ejecución.Minikube (v1.30+) instalado.Herramienta CLI kubectl instalada y configurada.Resolución de TareasTarea 1: Inicialización del Entorno de PruebasIniciar el clúster local utilizando el driver de Docker:minikube start --driver=docker
+Verificar el estado del nodo principal y la versión de la API (kube-apiserver):minikube status
+kubectl get nodes -o wide
+kubectl version
+(El campo Server Version de kubectl version indica la versión activa de kube-apiserver).Tarea 2: Definición Declarativa del Despliegue (nginx-deployment.yaml)Crea el archivo nginx-deployment.yaml con un objeto Deployment de 3 réplicas:apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: mi-nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: mi-nginx
+  template:
+    metadata:
+      labels:
+        app: mi-nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.25
+        ports:
+        - containerPort: 80
+Tarea 3: Despliegue y Verificación de JerarquíaAplicar el manifiesto en el clúster:kubectl apply -f nginx-deployment.yaml
+Inspeccionar la jerarquía de recursos (Deployment -> ReplicaSet -> Pods):kubectl get deployment nginx-deployment
+kubectl get rs
+kubectl get pods -o wide
+Deployment: nginx-deployment (3/3 réplicas listas).ReplicaSet implícito: nginx-deployment-<hash> (generado automáticamente por el Deployment).Pods: 3 instancias (nginx-deployment-<hash>-<id>) en estado Running, cada una con su dirección IP interna asignada por la red del clúster.Tarea 4: Prueba de Resiliencia y Autorrecuperación (Self-Healing)Eliminar manualmente uno de los Pods activos:kubectl delete pod <nombre-del-pod>
+Observar la recuperación automática en tiempo real:kubectl get pods -w
+Análisis del comportamiento: El kube-controller-manager (a través del controlador de ReplicaSet) detecta la discrepancia entre el estado deseado en etcd (3 réplicas) y el estado real (2 réplicas). De inmediato solicita al kube-apiserver crear un nuevo Pod; el kube-scheduler lo asigna al nodo disponible y el kubelet arranca el contenedor de reemplazo.Tarea 5: Escalado Dinámico de RecursosEscalar imperativamente de 3 a 5 réplicas:kubectl scale deployment nginx-deployment --replicas=5
+Comprobar que los 5 Pods están operativos:kubectl get pods -o wide
+Tarea 6: Exposición del Servicio y Acceso ExternoExponer el Deployment mediante un servicio NodePort:kubectl expose deployment nginx-deployment --type=NodePort --port=80
+Obtener la URL de acceso y comprobar la respuesta HTTP 200 OK:minikube service nginx-deployment --url
+(Mantén esta terminal abierta si usas WSL2 + driver Docker, ya que genera el túnel local).curl -I <URL_OBTENIDA>
+Resultado esperado: Cabecera HTTP/1.1 200 OK y visualización de la página de bienvenida de Nginx al abrir la URL en el navegador.Diferencia Técnica: Pod vs. ReplicaSet vs. DeploymentRecursoFunción y Nivel de AbstracciónPodUnidad mínima de ejecución en Kubernetes. Agrupa uno o más contenedores que comparten red (IP) y volúmenes. Es efímero y no se autorepara por sí solo si falla.ReplicaSetControlador que asegura que un número determinado de réplicas idénticas de un Pod estén ejecutándose en todo momento (self-healing y escalado).DeploymentRecurso declarativo de nivel superior que gestiona ReplicaSets. Permite realizar actualizaciones progresivas sin corte de servicio (Rolling Updates), pausar despliegues y revertir cambios (Rollbacks).Limpieza del Entornokubectl delete service nginx-deployment
+kubectl delete deployment nginx-deployment

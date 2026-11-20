@@ -1,0 +1,361 @@
+Sistema de Reservas y Compras (asir-shop) - Arquitectura Multinodo en Kubernetes
+
+Documentación técnica y guía de despliegue para el entorno local de pruebas en alta disponibilidad sobre WSL2 (Ubuntu/Debian) utilizando Minikube y el driver de Docker.
+
+🏗️Arquitectura del Clúster
+
+El entorno simula una arquitectura de producción separando la capa de gestión de la capa de cómputo mediante 3 nodos:
+
+Nodo 1 (minikube - Control Plane): Ejecuta los componentes maestros (kube-apiserver, etcd, kube-scheduler, controller-manager), CoreDNS y el Kubernetes Dashboard. No aloja cargas de trabajo de usuario.
+
+Nodo 2 (minikube-m02 - Worker Node 1): Nodo de cómputo que ejecuta réplicas de la aplicación web y del proxy inverso.
+
+Nodo 3 (minikube-m03 - Worker Node 2): Nodo de cómputo y persistencia que ejecuta réplicas de la aplicación y el contenedor de base de datos PostgreSQL vinculado a un volumen persistente.
+
+[ Windows Host OS ]
+   ├── Navegador Web ──────(HTTP :30080)──┐
+   └── Dashboard Proxy ────(HTTP :8001)──┐│
+                                         ▼▼
+[ WSL2 - Ubuntu / Debian (Docker Engine) ]
+   └── Clúster Kubernetes (Minikube)
+        ├── NODO 1: Control Plane (minikube)
+        ├── NODO 2: Worker Node 1 (minikube-m02) -> Pods asir-shop / nginx
+        └── NODO 3: Worker Node 2 (minikube-m03) -> Pods asir-shop / postgres-db + PVC
+
+
+ Prerrequisitos
+
+WSL2 con distribución Ubuntu o Debian.
+
+Docker Engine activo (o Docker Desktop con integración WSL2 habilitada).
+
+kubectl y minikube instalados.
+
+ Fase 1: Preparación del Clúster Multinodo
+
+Inicia el clúster con 3 nodos (1 Control Plane + 2 Workers) y habilita los complementos de monitorización:
+
+minikube start --nodes 3 --driver=docker
+minikube addons enable dashboard
+minikube addons enable metrics-server
+
+
+Comprueba el estado de los nodos:
+
+kubectl get nodes -o wide
+
+
+Aísla el Control Plane para que no ejecute pods de aplicación:
+
+kubectl taint nodes minikube node-role.kubernetes.io/control-plane:NoSchedule --overwrite
+
+
+🗄Fase 2: Base de Datos PostgreSQL con Persistencia (postgres.yaml)
+
+Despliega una instancia de PostgreSQL 15 protegida mediante un PersistentVolumeClaim (ReadWriteOnce) de 1Gi y expuesta internamente en el clúster mediante un servicio ClusterIP en el puerto 5432.
+
+Manifiesto (postgres.yaml):
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: "asir_shop"
+        - name: POSTGRES_USER
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: POSTGRES_USER
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: POSTGRES_PASSWORD
+        volumeMounts:
+        - mountPath: /var/lib/postgresql/data
+          name: postgres-storage
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-service
+spec:
+  type: ClusterIP
+  selector:
+    app: postgres
+  ports:
+  - port: 5432
+    targetPort: 5432
+
+
+Despliegue:
+
+cp postgres-secret.yaml.example postgres-secret.yaml   # edita la contraseña
+kubectl apply -f postgres-secret.yaml
+kubectl apply -f postgres.yaml
+kubectl get pvc,pods,svc -o wide
+
+
+ Fase 3: Aplicación Web / API REST (asir-shop.yaml)
+
+Despliega la capa lógica en Node.js con 3 réplicas distribuidas automáticamente entre los Worker Nodes y expuesta mediante un servicio NodePort en el puerto 30080.
+
+Manifiesto (asir-shop.yaml):
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: asir-shop-code
+data:
+  server.js: |
+    const http = require('http');
+    const os = require('os');
+    const net = require('net');
+
+    const PORT = 3000;
+    const DB_HOST = process.env.DB_HOST || 'postgres-service';
+    const DB_PORT = process.env.DB_PORT || 5432;
+
+    const server = http.createServer((req, res) => {
+      const client = new net.Socket();
+      client.setTimeout(1500);
+      client.connect(DB_PORT, DB_HOST, () => {
+        client.destroy();
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`
+          <h1>ASIR-Shop - Sistema de Reservas y Compras</h1>
+          <p><strong>Estado API Node.js:</strong> Operativa</p>
+          <p><strong>Pod que atiende la peticion:</strong> ${os.hostname()}</p>
+          <p><strong>Conexion a PostgreSQL (${DB_HOST}:${DB_PORT}):</strong> CONECTADO EXITOSAMENTE</p>
+        `);
+      });
+      client.on('error', (err) => {
+        res.writeHead(500, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(`<h1>Error conectando a PostgreSQL</h1><p>${err.message}</p>`);
+      });
+    });
+
+    server.listen(PORT, () => console.log(`Servidor asir-shop escuchando en puerto ${PORT}`));
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: asir-shop
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: asir-shop
+  template:
+    metadata:
+      labels:
+        app: asir-shop
+    spec:
+      containers:
+      - name: node-app
+        image: node:18-alpine
+        command: ["node", "/app/server.js"]
+        ports:
+        - containerPort: 3000
+        env:
+        - name: DB_HOST
+          value: "postgres-service"
+        - name: DB_PORT
+          value: "5432"
+        volumeMounts:
+        - name: app-code
+          mountPath: /app
+      volumes:
+      - name: app-code
+        configMap:
+          name: asir-shop-code
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: asir-shop-service
+spec:
+  type: NodePort
+  selector:
+    app: asir-shop
+  ports:
+  - port: 3000
+    targetPort: 3000
+    nodePort: 30080
+
+
+Despliegue:
+
+kubectl apply -f asir-shop.yaml
+kubectl get pods -o wide
+
+
+🛡️Fase 4: Capa Nginx Reverse Proxy (nginx-proxy.yaml)
+
+Despliega 2 réplicas de Nginx (una por cada Worker Node) actuando como proxy inverso delante de los pods de Node.js.
+
+Manifiesto (nginx-proxy.yaml):
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nginx-conf
+data:
+  default.conf: |
+    server {
+      listen 80;
+      location / {
+        proxy_pass http://asir-shop-service:3000;
+        proxy_set_header Host $host;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx-frontend
+  template:
+    metadata:
+      labels:
+        app: nginx-frontend
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: nginx-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+spec:
+  type: NodePort
+  selector:
+    app: nginx-frontend
+  ports:
+  - port: 80
+    targetPort: 80
+    nodePort: 30081
+
+
+Despliegue:
+
+kubectl apply -f nginx-proxy.yaml
+
+
+ Fase 5: Comprobación en Navegador y Dashboard
+
+1. Acceso a la Aplicación Web (asir-shop):
+
+Ejecuta el reenvío de puertos en una terminal de WSL2:
+
+kubectl port-forward svc/asir-shop-service 30080:3000
+
+
+Abre en tu navegador de Windows: http://localhost:30080
+
+Recarga varias veces (F5) para observar el balanceo de carga entre las 3 réplicas.
+
+2. Acceso al Kubernetes Dashboard:
+
+En otra terminal de WSL2 ejecuta:
+
+minikube dashboard --url
+
+
+Abre la URL generada (http://127.0.0.1:XXXXX/...) en tu navegador para monitorizar nodos, cargas de trabajo, servicios y almacenamiento.
+
+ Fase 6: Pruebas de Resiliencia y Tolerancia a Fallos
+
+1. Tolerancia a fallos en la capa Web (asir-shop):
+
+Identifica un pod activo y elimínalo:
+
+kubectl get pods -l app=asir-shop -o wide
+kubectl delete pod <NOMBRE_DEL_POD>
+
+
+Verifica que el controlador crea inmediatamente un reemplazo manteniendo las 3 réplicas activas sin interrumpir el acceso web.
+
+2. Persistencia de datos en PostgreSQL (PVC):
+
+Inserta un registro de prueba en la base de datos:
+
+kubectl exec -it deploy/postgres-db -- psql -U admin -d asir_shop -c "CREATE TABLE reservas (id SERIAL PRIMARY KEY, cliente VARCHAR(50)); INSERT INTO reservas (cliente) VALUES ('Cliente Prueba 1');"
+
+
+Elimina el pod de PostgreSQL para simular un fallo:
+
+kubectl delete pod -l app=postgres
+
+
+Una vez levantado el nuevo pod (kubectl get pods -w), comprueba que los datos siguen almacenados:
+
+kubectl exec -it deploy/postgres-db -- psql -U admin -d asir_shop -c "SELECT * FROM reservas;"
+
+
+3. Simulación de caída de un Worker Node:
+
+Drena el nodo donde reside PostgreSQL (por ejemplo, minikube-m03):
+
+kubectl drain minikube-m03 --ignore-daemonsets --delete-emptydir-data
+
+
+Observa cómo Kubernetes migra automáticamente los pods (incluido PostgreSQL y su volumen) al nodo operativo (minikube-m02).
+
+Restaura el nodo al finalizar la prueba:
+
+kubectl uncordon minikube-m03
+
+
+ Fase 7: Limpieza del Entorno
+
+Para detener y eliminar por completo el clúster multinodo al finalizar la práctica:
+
+minikube stop
+minikube delete

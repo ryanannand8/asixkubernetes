@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: tres-capas
+data:
+  PORT: "3000"
+  MONGO_HOST: "mongodb"        # nombre del Service de Mongo (DNS interno)
+  MONGO_PORT: "27017"
+  MONGO_DB: "appdb"
+  APP_MESSAGE: "Hola desde el ConfigMap del backend"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-env
+  namespace: tres-capas
+data:
+  BACKEND_HOST: "backend"      # nombre del Service del backend
+  BACKEND_PORT: "3000"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-files
+  namespace: tres-capas
+data:
+  default.conf.template: |
+    server {
+      listen 80;
+      location / {
+        root /usr/share/nginx/html;
+        index index.html;
+      }
+      location /api/ {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+      }
+    }
+  index.html: |
+    <!DOCTYPE html>
+    <html lang="es">
+    <head><meta charset="UTF-8"><title>App 3 capas</title></head>
+    <body>
+      <h1>App de 3 capas en Kubernetes</h1>
+      <p id="cfg"></p>
+      <input id="texto" placeholder="Nuevo elemento">
+      <button onclick="añadir()">Añadir</button>
+      <ul id="lista"></ul>
+      <script>
+        async function cargar() {
+          const c = await (await fetch('/api/config')).json();
+          document.getElementById('cfg').textContent =
+            `${c.mensaje} | Mongo: ${c.mongoHost} | Pod backend: ${c.pod}`;
+          const items = await (await fetch('/api/items')).json();
+          document.getElementById('lista').innerHTML =
+            items.map(i => `<li>${i.texto}</li>`).join('');
+        }
+        async function añadir() {
+          const t = document.getElementById('texto');
+          await fetch('/api/items', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({texto: t.value})
+          });
+          t.value = '';
+          cargar();
+        }
+        cargar();
+      </script>
+    </body>
+    </html>

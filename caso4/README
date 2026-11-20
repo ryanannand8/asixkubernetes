@@ -1,0 +1,171 @@
+Caso Práctico IV: Despliegue Progresivo en Kubernetes (ASIR Stucom Solutions)
+
+Este documento reúne la configuración y los pasos necesarios para realizar el despliegue progresivo de un servidor web Nginx en un clúster local con Minikube, demostrando las diferencias entre un Pod, un ReplicaSet y un Deployment.
+
+📋 Requisitos Previos
+
+Minikube instalado y configurado.
+
+kubectl instalado para interactuar con el clúster.
+
+🚀 Fase 1: Preparación del Entorno
+
+Inicia el clúster local:
+
+minikube start
+
+
+Verifica que el nodo y los servicios base están activos:
+
+minikube status
+kubectl get all
+
+
+ Fase 2: Despliegue Básico (mi-pod.yaml)
+
+Unidad mínima de despliegue en Kubernetes. No ofrece tolerancia a fallos; si el contenedor o el nodo caen, el servicio se pierde.
+
+Código (mi-pod.yaml):
+
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mi-pod
+  labels:
+    app: mi-app
+spec:
+  containers:
+  - name: nginx
+    image: nginx:latest
+    ports:
+    - containerPort: 80
+
+
+Despliegue y Comprobación en URL:
+
+Aplica el manifiesto:
+
+kubectl apply -f mi-pod.yaml
+
+
+Realiza el reenvío de puertos para acceder desde tu navegador:
+
+kubectl port-forward mi-pod 8000:80
+
+
+Abre tu navegador en http://localhost:8000 para comprobar que Nginx responde.
+
+(Opcional) Verifica las peticiones registradas en los logs:
+
+kubectl logs mi-pod
+
+
+Elimina el Pod antes de continuar:
+
+kubectl delete pods mi-pod
+
+
+ Fase 3: Alta Disponibilidad (mi-replicaset.yaml)
+
+Garantiza que siempre haya 2 réplicas exactas ejecutándose. Si un Pod falla o es eliminado manualmente, el controlador crea otro de inmediato.
+
+Código (mi-replicaset.yaml):
+
+apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: mi-replicaset
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: mi-app
+  template:
+    metadata:
+      labels:
+        app: mi-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+
+
+Despliegue y Comprobación en URL:
+
+Aplica el ReplicaSet:
+
+kubectl apply -f mi-replicaset.yaml
+
+
+Redirige el tráfico hacia el ReplicaSet:
+
+kubectl port-forward rs/mi-replicaset 8000:80
+
+
+Abre tu navegador en http://localhost:8000 para verificar el acceso.
+
+Elimina el ReplicaSet antes de pasar a la siguiente fase:
+
+kubectl delete replicasets mi-replicaset
+
+
+Fase 4: Automatización y Actualizaciones (mi-deployment.yaml)
+
+Estándar de producción. Gestiona ReplicaSets de manera declarativa e incorpora la estrategia RollingUpdate para actualizar la aplicación sin cortes de servicio.
+
+Código (mi-deployment.yaml):
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mi-deployment
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: mi-app
+  template:
+    metadata:
+      labels:
+        app: mi-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:latest
+        ports:
+        - containerPort: 80
+
+
+Despliegue y Comprobación en URL:
+
+Lanza el Deployment:
+
+kubectl apply -f mi-deployment.yaml
+
+
+Verifica la estrategia aplicada:
+
+kubectl describe deployment mi-deployment
+
+
+Redirige el puerto al Deployment para probarlo visualmente:
+
+kubectl port-forward deployment/mi-deployment 8000:80
+
+
+Abre tu navegador en http://localhost:8000 para confirmar que la aplicación está activa.
+
+ Fase 5: Limpieza y Destrucción del Entorno
+
+Una vez finalizadas todas las comprobaciones, elimina los recursos y apaga el clúster:
+
+kubectl delete deployment mi-deployment
+minikube stop
+minikube delete
